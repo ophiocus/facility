@@ -28,10 +28,23 @@ export function usageFromJson(provider: Provider, body: unknown): Partial<Usage>
       cacheWriteTokens: numberValue(row.cache_creation_input_tokens),
     };
   }
+  // OpenAI's two APIs name usage differently: Responses reports
+  // input_tokens/output_tokens (details under input_tokens_details), Chat
+  // Completions prompt_tokens/completion_tokens (prompt_tokens_details).
+  // Both report input INCLUSIVE of cached tokens, while costCents sums the
+  // buckets additively in the Anthropic convention - so cached tokens are
+  // subtracted from input here, or they would be billed twice.
+  const inputInclusive = numberValue(row.input_tokens) ?? numberValue(row.prompt_tokens);
+  const cacheRead =
+    nestedNumber(row.input_tokens_details, "cached_tokens") ??
+    nestedNumber(row.prompt_tokens_details, "cached_tokens");
   return {
-    inputTokens: numberValue(row.input_tokens),
-    outputTokens: numberValue(row.output_tokens),
-    cacheReadTokens: nestedNumber(row.input_tokens_details, "cached_tokens"),
+    inputTokens:
+      inputInclusive !== undefined && cacheRead !== undefined
+        ? Math.max(0, inputInclusive - cacheRead)
+        : inputInclusive,
+    outputTokens: numberValue(row.output_tokens) ?? numberValue(row.completion_tokens),
+    cacheReadTokens: cacheRead,
     cacheWriteTokens: nestedNumber(row.input_tokens_details, "cache_creation_tokens"),
   };
 }
@@ -125,7 +138,14 @@ export class UsageTee extends Transform {
           mergeUsage(this.usage, usageFromJson("anthropic", source));
         }
       } else {
-        mergeUsage(this.usage, usageFromJson("openai", parsed));
+        // OpenAI streamed shapes: Chat Completions puts usage on the final
+        // chunk's top level (requested via stream_options.include_usage),
+        // while the Responses API - the wire Codex speaks - nests it inside
+        // the response.completed envelope ({"type":"response.completed",
+        // "response":{"usage":{...}}}) and never at the frame's top level.
+        for (const source of [parsed, (parsed as { response?: unknown })?.response]) {
+          mergeUsage(this.usage, usageFromJson("openai", source));
+        }
       }
     } catch {
       // Provider bytes are still passed through; malformed telemetry frames only affect metering.
