@@ -87,15 +87,23 @@ itself when the team wants agents running in its own CI.
 ## Quick start: run Facility
 
 Running Facility locally takes one command for the stack plus a one-time GitHub
-App setup for sign-in and repository automation. You need Docker, Node.js 22 or
-newer, and pnpm 11 (via corepack).
+App setup for sign-in and repository automation. You need Docker, Node.js
+22.13+ (or 23.4+ — pnpm 11 needs `node:sqlite`, unflagged from those releases),
+and pnpm 11:
+
+```bash
+npm install -g pnpm@11
+```
+
+(`corepack enable` also works on Node 22–24, but corepack is no longer bundled
+from Node 25, so the npm route works everywhere.)
 
 ### 1. Clone and boot the stack
 
 ```bash
 git clone https://github.com/theam/facility.git
 cd facility
-corepack enable
+npm install -g pnpm@11
 pnpm dev
 ```
 
@@ -494,7 +502,7 @@ can be agreed on.
 ```bash
 git clone https://github.com/theam/facility.git
 cd facility
-corepack enable
+npm install -g pnpm@11
 pnpm install --frozen-lockfile
 pnpm verify
 ```

@@ -32,7 +32,7 @@ the local platform stack and sandbox end-to-end tests.
 ```bash
 git clone https://github.com/theam/facility.git
 cd facility
-corepack enable
+npm install -g pnpm@11
 pnpm dev
 ```
 
