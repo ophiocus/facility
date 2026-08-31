@@ -4,6 +4,14 @@ import { execFileSync } from "node:child_process";
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
+// Test seam and constrained-environment override: FACILITY_GH_BIN names the
+// gh executable (default "gh"), FACILITY_GH_ARGS is a JSON array of leading
+// arguments. No shell is ever involved, so a script stub works on every
+// platform — Windows cannot execute an extensionless or .cmd stub through
+// execFile at all (Node refuses .cmd without a shell since CVE-2024-27980).
+const GH_BIN = process.env.FACILITY_GH_BIN ?? "gh";
+const GH_ARGS = process.env.FACILITY_GH_ARGS ? JSON.parse(process.env.FACILITY_GH_ARGS) : [];
+
 const mode = process.argv[2];
 const repo = required("GITHUB_REPOSITORY");
 const defaultBranch = required("DEFAULT_BRANCH");
@@ -127,7 +135,7 @@ function pull(number) {
 }
 
 function ghJson(args) {
-  return JSON.parse(execFileSync("gh", args, { encoding: "utf8" }));
+  return JSON.parse(execFileSync(GH_BIN, [...GH_ARGS, ...args], { encoding: "utf8" }));
 }
 
 function output(name, value) {

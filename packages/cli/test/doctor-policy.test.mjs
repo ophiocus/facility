@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import {
@@ -428,7 +428,12 @@ function runResolverFixture(t, overrides) {
     encoding: "utf8",
     env: {
       ...process.env,
-      PATH: `${bin}:${process.env.PATH}`,
+      PATH: `${bin}${delimiter}${process.env.PATH}`,
+      FACILITY_GH_BIN: process.execPath,
+      FACILITY_GH_ARGS: JSON.stringify([ghPath]),
+      // Fail offline, never against the real API, if the stub falls through.
+      GH_HOST: "gh-stub.invalid",
+      GH_TOKEN: "stub-only",
       GITHUB_REPOSITORY: "acme/demo",
       GITHUB_EVENT_PATH: eventPath,
       GITHUB_OUTPUT: outputPath,

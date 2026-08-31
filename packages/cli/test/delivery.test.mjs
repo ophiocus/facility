@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 
@@ -138,7 +138,7 @@ else process.stdout.write(JSON.stringify(data.pr));
 `,
   );
   chmodSync(ghPath, 0o755);
-  return { dir, dataPath, eventPath, outputPath, runnerTemp };
+  return { dir, dataPath, eventPath, outputPath, runnerTemp, ghPath };
 }
 
 function runVerifier(fixture, mode, extraEnv = {}) {
@@ -146,7 +146,15 @@ function runVerifier(fixture, mode, extraEnv = {}) {
     encoding: "utf8",
     env: {
       ...process.env,
-      PATH: `${fixture.dir}:${process.env.PATH}`,
+      PATH: `${fixture.dir}${delimiter}${process.env.PATH}`,
+      // The stub engages through the seam — the only mechanism that works on
+      // every platform (see the note in verify.mjs).
+      FACILITY_GH_BIN: process.execPath,
+      FACILITY_GH_ARGS: JSON.stringify([fixture.ghPath]),
+      // If the stub ever fails to engage, the real gh must die offline
+      // instead of reaching api.github.com with the developer's credentials.
+      GH_HOST: "gh-stub.invalid",
+      GH_TOKEN: "stub-only",
       FAKE_GH_DATA: fixture.dataPath,
       GITHUB_REPOSITORY: "acme/demo",
       GITHUB_EVENT_PATH: fixture.eventPath,

@@ -5,9 +5,18 @@
 // resolver has proved that the PR head is current, every check is terminal,
 // the failure is low risk, and the bounded retry budget remains.
 import { execFileSync } from "node:child_process";
+
 import { createHash } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
+
+// Test seam and constrained-environment override: FACILITY_GH_BIN names the
+// gh executable (default "gh"), FACILITY_GH_ARGS is a JSON array of leading
+// arguments. No shell is ever involved, so a script stub works on every
+// platform — Windows cannot execute an extensionless or .cmd stub through
+// execFile at all (Node refuses .cmd without a shell since CVE-2024-27980).
+const GH_BIN = process.env.FACILITY_GH_BIN ?? "gh";
+const GH_ARGS = process.env.FACILITY_GH_ARGS ? JSON.parse(process.env.FACILITY_GH_ARGS) : [];
 
 const MAX_REPAIR_ATTEMPTS = 2;
 const MAX_BRANCH_REPAIR_ATTEMPTS = 3;
@@ -352,7 +361,10 @@ async function main() {
     const repository = requiredEnv("GITHUB_REPOSITORY");
     const event = JSON.parse(readFileSync(requiredEnv("GITHUB_EVENT_PATH"), "utf8"));
     const gh = async (args) =>
-      execFileSync("gh", args, { encoding: "utf8", maxBuffer: 20 * 1024 * 1024 });
+      execFileSync(GH_BIN, [...GH_ARGS, ...args], {
+        encoding: "utf8",
+        maxBuffer: 20 * 1024 * 1024,
+      });
     decision = await resolveDoctor({
       repository,
       event,
