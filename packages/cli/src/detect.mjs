@@ -93,12 +93,20 @@ const ADAPTERS = [
       }
       // The toolchain step already installs Node dependencies, so provisioning
       // here means only the project's own extra setup.
+      const install = existsSync(join(dir, "pnpm-lock.yaml"))
+        ? "pnpm install --frozen-lockfile"
+        : existsSync(join(dir, "yarn.lock"))
+          ? "yarn install --immutable"
+          : existsSync(join(dir, "package-lock.json"))
+            ? "npm ci"
+            : "npm install";
       const pnpmWorkspace = readText(join(dir, "pnpm-workspace.yaml"));
       const declared = Array.isArray(pkg.workspaces) ? pkg.workspaces : (pkg.workspaces?.packages ?? []);
       const workspaceGlobs = pnpmWorkspace ? pnpmWorkspaceGlobs(pnpmWorkspace) : declared;
 
       return {
         manager,
+        install,
         provision: scripts.setup ? `${runner} setup` : "",
         checks,
         workspaceGlobs,
@@ -341,8 +349,15 @@ function detectRoots(dir) {
 
 // A command for a root below the repository root has to run there. Roots at
 // "." are emitted verbatim, so single-root repositories are unchanged.
+// Discovered directory names come from repository contents and may legally
+// contain shell metacharacters, so the path is always single-quoted (with
+// embedded quotes escaped) before it reaches a shell command.
+function shellQuote(value) {
+  return "'" + value.replace(/'/g, "'\\''") + "'";
+}
+
 function scopeCommand(rootPath, command) {
-  return rootPath === "." ? command : `(cd ${rootPath} && ${command})`;
+  return rootPath === "." ? command : `(cd ${shellQuote(rootPath)} && ${command})`;
 }
 
 export function detect(dir) {
@@ -361,8 +376,15 @@ export function detect(dir) {
       const scoped = scopeCommand(root.path, check);
       if (!checks.includes(scoped)) checks.push(scoped);
     }
-    if (root.provision) {
-      const scoped = scopeCommand(root.path, root.provision);
+    const provisionParts = [];
+    if (root.ecosystem === "node" && root.path !== "." && root.install) {
+      // A nested Node root is outside the CI toolchain steps' install, so its
+      // checks would otherwise run against an empty node_modules.
+      provisionParts.push(root.install);
+    }
+    if (root.provision) provisionParts.push(root.provision);
+    for (const part of provisionParts) {
+      const scoped = scopeCommand(root.path, part);
       if (!provisions.includes(scoped)) provisions.push(scoped);
     }
   }
