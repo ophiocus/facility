@@ -10,14 +10,6 @@ import { createHash } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
-// Test seam and constrained-environment override: FACILITY_GH_BIN names the
-// gh executable (default "gh"), FACILITY_GH_ARGS is a JSON array of leading
-// arguments. No shell is ever involved, so a script stub works on every
-// platform — Windows cannot execute an extensionless or .cmd stub through
-// execFile at all (Node refuses .cmd without a shell since CVE-2024-27980).
-const GH_BIN = process.env.FACILITY_GH_BIN ?? "gh";
-const GH_ARGS = process.env.FACILITY_GH_ARGS ? JSON.parse(process.env.FACILITY_GH_ARGS) : [];
-
 const MAX_REPAIR_ATTEMPTS = 2;
 const MAX_BRANCH_REPAIR_ATTEMPTS = 3;
 const FAILURE_CONCLUSIONS = new Set([
@@ -350,7 +342,13 @@ export async function resolveDoctor({
   });
 }
 
-async function main() {
+// The GitHub runner is injectable ONLY through this exported entry point:
+// the test seam lives at the module boundary, and the production script
+// path always constructs the fixed executable below. Nothing about the gh
+// invocation is readable from the ambient environment, so an earlier
+// workflow step persisting variables through $GITHUB_ENV cannot redirect
+// this verifier while it holds GH_TOKEN.
+export async function main({ gh: injectedGh } = {}) {
   const outputPath = process.env.GITHUB_OUTPUT;
   const output = (key, value) => {
     if (outputPath) appendFileSync(outputPath, `${key}=${String(value).replaceAll("\n", " ")}\n`);
@@ -360,11 +358,9 @@ async function main() {
   try {
     const repository = requiredEnv("GITHUB_REPOSITORY");
     const event = JSON.parse(readFileSync(requiredEnv("GITHUB_EVENT_PATH"), "utf8"));
-    const gh = async (args) =>
-      execFileSync(GH_BIN, [...GH_ARGS, ...args], {
-        encoding: "utf8",
-        maxBuffer: 20 * 1024 * 1024,
-      });
+    const gh =
+      injectedGh ??
+      (async (args) => execFileSync("gh", args, { encoding: "utf8", maxBuffer: 20 * 1024 * 1024 }));
     decision = await resolveDoctor({
       repository,
       event,
