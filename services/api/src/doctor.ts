@@ -740,7 +740,7 @@ async function checkReceiptIntegrity(db: Db, orgId: string): Promise<DoctorCheck
     return fail(
       "receipt_integrity",
       "Agent receipt integrity",
-      `${report.invalidRunIds.length} invalid and ${report.unauditedRunIds.length} unaudited receipts found across ${report.checked} runs.`,
+      `${report.invalidRunIds.length} invalid, ${report.unauditedRunIds.length} unaudited, and ${report.missingReceiptRunIds.length} audited-but-missing receipts found across ${report.checked} runs.`,
       "Stop outcome and learning jobs, preserve audit_events and runs, then investigate receipt mutation or an outdated runner.",
     );
   }

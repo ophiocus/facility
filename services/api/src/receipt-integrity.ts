@@ -7,6 +7,12 @@ export type ReceiptIntegrityReport = {
   checked: number;
   invalidRunIds: string[];
   unauditedRunIds: string[];
+  /** Audited run.finished digests whose run no longer carries a receipt —
+   * the receipt was destroyed or the run row deleted after the fact. Every
+   * terminal run writes its receipt and its audit event together, so this
+   * can only be an anomaly; it is reported distinctly from "never audited"
+   * so the two failure stories stay distinguishable. */
+  missingReceiptRunIds: string[];
 };
 
 export async function verifyStoredReceipts(
@@ -15,7 +21,7 @@ export async function verifyStoredReceipts(
   runIds?: string[],
 ): Promise<ReceiptIntegrityReport> {
   if (runIds?.length === 0) {
-    return { ok: true, checked: 0, invalidRunIds: [], unauditedRunIds: [] };
+    return { ok: true, checked: 0, invalidRunIds: [], unauditedRunIds: [], missingReceiptRunIds: [] };
   }
   const stored = await db
     .select({ id: runs.id, receipt: runs.receipt })
@@ -41,6 +47,11 @@ export async function verifyStoredReceipts(
   }
   const invalidRunIds: string[] = [];
   const unauditedRunIds: string[] = [];
+  const storedIds = new Set(stored.map((row) => row.id));
+  const scope = runIds ? new Set(runIds) : null;
+  const missingReceiptRunIds = [...auditedDigests.keys()].filter(
+    (id) => !storedIds.has(id) && (!scope || scope.has(id)),
+  );
   for (const row of stored) {
     const parsed = FacilityReceiptSchema.safeParse(row.receipt);
     if (!parsed.success || !verifyFacilityReceipt(parsed.data)) {
@@ -52,10 +63,14 @@ export async function verifyStoredReceipts(
     }
   }
   return {
-    ok: invalidRunIds.length === 0 && unauditedRunIds.length === 0,
+    ok:
+      invalidRunIds.length === 0 &&
+      unauditedRunIds.length === 0 &&
+      missingReceiptRunIds.length === 0,
     checked: stored.length,
     invalidRunIds,
     unauditedRunIds,
+    missingReceiptRunIds,
   };
 }
 

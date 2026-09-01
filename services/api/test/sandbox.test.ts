@@ -1741,6 +1741,40 @@ describe("sandbox api", async () => {
     await expect(verifyStoredReceipts(db, orgId, [run.id])).resolves.toMatchObject({ ok: true });
   });
 
+  it("receipt integrity notices a receipt destroyed after run.finished was audited", async () => {
+    // #226: verifyStoredReceipts only walked runs that still HAVE a receipt,
+    // so nulling one (or deleting the run) silently shrank `checked` while ok
+    // stayed true. The reverse question — audited digest, no receipt behind
+    // it — must go red.
+    const token = "frt_receipt_destroyed";
+    const run = await insertRunnerRun(token, "running");
+    const response = await app.inject({
+      method: "POST",
+      url: `/internal/runs/${run.id}/result`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: { status: "succeeded" },
+    });
+    expect(response.statusCode).toBe(200);
+    await expect(verifyStoredReceipts(db, orgId, [run.id])).resolves.toMatchObject({ ok: true });
+
+    await db.update(runs).set({ receipt: null }).where(eq(runs.id, run.id));
+    const nulled = await verifyStoredReceipts(db, orgId, [run.id]);
+    expect(nulled.ok).toBe(false);
+    expect(nulled.missingReceiptRunIds).toEqual([run.id]);
+    expect(nulled.invalidRunIds).toEqual([]);
+
+    // Scope is respected: asking about other runs stays clean.
+    const outOfScope = await verifyStoredReceipts(db, orgId, ["run_someone_else"]);
+    expect(outOfScope.missingReceiptRunIds).toEqual([]);
+
+    // A deleted run row is the same anomaly — the audit trail outlives it.
+    await db.delete(runEvents).where(eq(runEvents.runId, run.id));
+    await db.delete(runs).where(eq(runs.id, run.id));
+    const deleted = await verifyStoredReceipts(db, orgId);
+    expect(deleted.ok).toBe(false);
+    expect(deleted.missingReceiptRunIds).toContain(run.id);
+  });
+
   it("delivers run events over the NOTIFY-backed SSE path without safety polling", async () => {
     const token = "frt_stream";
     const run = await insertRunnerRun(token, "running");
