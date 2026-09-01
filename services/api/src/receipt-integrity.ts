@@ -21,7 +21,13 @@ export async function verifyStoredReceipts(
   runIds?: string[],
 ): Promise<ReceiptIntegrityReport> {
   if (runIds?.length === 0) {
-    return { ok: true, checked: 0, invalidRunIds: [], unauditedRunIds: [], missingReceiptRunIds: [] };
+    return {
+      ok: true,
+      checked: 0,
+      invalidRunIds: [],
+      unauditedRunIds: [],
+      missingReceiptRunIds: [],
+    };
   }
   const stored = await db
     .select({ id: runs.id, receipt: runs.receipt })
