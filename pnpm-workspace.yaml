@@ -29,6 +29,7 @@ overrides:
   "webpack-dev-server@<=5.2.5": 5.2.6
   "dompurify@<=3.4.12": 3.4.13
   "nanoid@>=3.0.0 <3.3.18": 3.3.18
+  "browserslist@<4.28.7": 4.28.7
 
 # Postinstall build-script allowlist — nothing builds unless named here.
 allowBuilds:
