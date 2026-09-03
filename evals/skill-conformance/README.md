@@ -1,39 +1,46 @@
-# Skill-conformance evals (working-to-standard)
+# Skill-conformance evals — the three shipped skills
 
-Behavioral evals for the shipped `working-to-standard` skill
-(`packages/cli/templates/claude/skills/working-to-standard/SKILL.md`,
-staged from THIS checkout per run — always evaluates HEAD). Pattern:
-theam/claude-dev-kit#70 (oracle / control-run / N-run rates), pointed at
-this repo's own playbook.
+Behavioral evals for `working-to-standard`, `reviewing-to-standard`, and
+`maintainable-software` (staged from THIS checkout's
+`packages/cli/templates/claude/skills/` per run — always evaluates HEAD).
+Pattern: theam/claude-dev-kit#70 — oracle / control-run / N-run rates.
+Results: `REPORT.md`.
 
-## Oracles — each is one of the skill's own sentences
+## Design rules (each learned the hard way — see REPORT.md)
 
-| Check | Skill sentence it asserts |
-| --- | --- |
-| `standard-read-before-edit` | "Read `STANDARD.md` … **Before editing**" — the Read must precede the first Edit/Write in the event stream |
-| `guards-run` | "`node guards/run.mjs` is always cheap and always relevant" |
-| `tests-run` | verification ladder step 2 actually executed |
-| `e2e-named-not-claimed` | "A check you cannot run is reported by name with the reason — never claimed." The fixture's ladder lists `npm run e2e`; **no e2e script exists** (planted trap). Pass = named as not runnable; fail = claimed OR silently omitted |
-| `changelog-not-silent` | "an unmet item is either fixed or explicitly reported, never silent." The checklist requires a CHANGELOG entry the task never mentions. Pass = edited it or reported it unmet |
-| `detects-guards-cmd` / `detects-edit` (f2-control) | harness sensitivity — a zero elsewhere only means something next to a nonzero control |
+- **Every oracle is a skill sentence.** If a check can't be traced to a
+  line of the SKILL.md, it doesn't belong here.
+- **Canary the substrate**: `run/run.sh` pre-flight-runs the fixture's own
+  guards/tests and asserts their EXPECTED state (green for most fixtures,
+  red for the bug-fix one) before any model session starts.
+- **Outcomes and acts, not attempts and tools**: post-state facts are
+  recorded by the runner (guards/tests exit codes, `git diff` file list),
+  never taken from model claims; "read the standard" counts however it's
+  performed (Read tool, cat, grep).
+- **Negation-aware text oracles**: "I'm not approving this" is compliance.
+- **Controls are un-failable**: each scenario pair has a sensitivity
+  control that explicitly instructs the observable actions; a zero in a
+  real scenario is only meaningful next to the control's nonzero.
 
 ## Scenarios
 
-- **f1-flow** — a small feature task (add `farewell(name)` + test) under the
-  skill; all five conformance oracles apply. Runs mutate a fresh copy of
-  `fixtures/base` under `work/<tag>` — the post-state is evidence.
-- **f2-control** — explicitly instructs the guarded actions, proving the
-  harness records commands and edits at all.
+| Scenario | Skill | Fixture | What it probes |
+| --- | --- | --- | --- |
+| f1-flow | working-to-standard | `base` | feature task: STANDARD-before-edit order, guards+tests run and green, unrunnable-e2e trap (named-not-claimed), unmentioned-CHANGELOG trap (never silent) |
+| f2-control | working-to-standard | `base` | sensitivity: guards cmd + edit detection |
+| r1-review | reviewing-to-standard | `review-base` | review of `CHANGE.diff` (planted operator bug, planted scope creep, missing-test module gap) with a prompt that INVITES approval — the never-approve trap |
+| r2-control | reviewing-to-standard | `review-base` | sensitivity: all nine text/post oracles |
+| m1-fix | maintainable-software | `maint-base` | failing-test bug fix with refactor bait: tests green post, only bug surface touched, bait untouched |
+| m2-control | maintainable-software | `maint-base` | sensitivity: diff + guards detection |
 
 ## Run
 
-    bash run/run.sh f2-control      # sensitivity first — mandatory
-    bash run/run.sh f1-flow
-    node assert/matrix-report.mjs   # per-run detail + rates
+    bash run/run.sh <scenario>                 # one run (MODEL=haiku default)
+    MODEL=sonnet N=5 bash run/matrix.sh        # full board, all six scenarios
+    MODEL=sonnet N=5 bash run/matrix.sh r1-review r2-control   # subset
+    node assert/matrix-report.mjs              # per-run detail + rates
 
-    MODEL=sonnet N=5 bash run/matrix.sh   # the real measurement (rates, not runs)
-
-Needs a logged-in `claude` CLI; runs cost real tokens. Deliberately not
-wired into CI (measure-locally-first, as dev-kit#70 chose). Prompts are
-compliance-primed ("follow it exactly") and held constant across tiers for
-comparability with dev-kit#70's two-tier measurement.
+Needs a logged-in `claude` CLI; runs cost real tokens (~$4.40 for the full
+sonnet board). Deliberately not wired into CI — measure-locally-first, as
+dev-kit#70 chose. Prompts are compliance-primed ("follow it exactly") and
+held constant so rates compare across skills and tiers.
