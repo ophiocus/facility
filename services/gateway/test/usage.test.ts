@@ -8,6 +8,20 @@ const CONTENT_DELTA =
 const MESSAGE_DELTA =
   'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":700}}\n\n';
 
+// OpenAI speaks two dialects. Chat Completions names the buckets
+// prompt/completion and reports usage on a final chunk requested through
+// stream_options.include_usage; the Responses API - the wire Codex speaks -
+// names them input/output and nests usage inside the response.completed
+// envelope, never at the frame's top level. Both report input INCLUSIVE of
+// cached tokens, while costCents sums the buckets additively.
+const CHAT_CONTENT_DELTA = 'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n';
+const CHAT_USAGE_FINAL =
+  'data: {"choices":[],"usage":{"prompt_tokens":1000,"completion_tokens":700,"prompt_tokens_details":{"cached_tokens":400}}}\n\n';
+const CHAT_DONE = "data: [DONE]\n\n";
+const RESPONSES_CREATED = 'data: {"type":"response.created","response":{"id":"resp_1"}}\n\n';
+const RESPONSES_COMPLETED =
+  'data: {"type":"response.completed","response":{"id":"resp_1","usage":{"input_tokens":1000,"output_tokens":700,"input_tokens_details":{"cached_tokens":400}}}}\n\n';
+
 describe("UsageTee anthropic streaming usage", () => {
   it("meters input and cache tokens reported by message_start", async () => {
     const tee = new UsageTee("anthropic");
@@ -63,6 +77,51 @@ describe("UsageTee anthropic streaming usage", () => {
 
     expect(tee.usage.inputTokens).toBe(12);
     expect(tee.usage.outputTokens).toBe(34);
+  });
+});
+
+describe("UsageTee openai streaming usage", () => {
+  it("meters the chat completions naming and bills cached tokens once", async () => {
+    const tee = new UsageTee("openai");
+    await feed(tee, [CHAT_CONTENT_DELTA, CHAT_USAGE_FINAL, CHAT_DONE]);
+
+    // Reading only input_tokens/output_tokens meters this stream at zero, which
+    // is a hard-budget bypass: nothing accumulates against the reservation.
+    // prompt_tokens is inclusive of the 400 cached, so input is the 600 that
+    // were actually processed - leaving 1000 bills those 400 at the input rate
+    // on top of the cache-read rate.
+    expect(tee.usage).toEqual({
+      inputTokens: 600,
+      outputTokens: 700,
+      cacheReadTokens: 400,
+      cacheWriteTokens: 0,
+    });
+  });
+
+  it("meters usage nested in the response.completed envelope", async () => {
+    const tee = new UsageTee("openai");
+    await feed(tee, [RESPONSES_CREATED, RESPONSES_COMPLETED]);
+
+    // Codex streams here. Usage never appears at the frame's top level, so
+    // reading only the frame meters the whole run at zero. The earlier
+    // response.created frame carries no usage and must not erase the total.
+    expect(tee.usage).toEqual({
+      inputTokens: 600,
+      outputTokens: 700,
+      cacheReadTokens: 400,
+      cacheWriteTokens: 0,
+    });
+  });
+
+  it("still meters a non-streamed body using the chat completions naming", async () => {
+    const tee = new UsageTee("openai");
+    await feed(tee, [JSON.stringify({ usage: { prompt_tokens: 12, completion_tokens: 34 } })]);
+
+    // No cached details here: input stays as reported rather than becoming
+    // undefined, which is what a naive subtraction would produce.
+    expect(tee.usage.inputTokens).toBe(12);
+    expect(tee.usage.outputTokens).toBe(34);
+    expect(tee.usage.cacheReadTokens).toBe(0);
   });
 });
 

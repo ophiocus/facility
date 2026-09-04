@@ -502,7 +502,13 @@ describe("gateway", async () => {
     const row = (
       await db.select().from(llmRequests).where(eq(llmRequests.virtualKeyId, setup.keyId))
     )[0];
-    expect(row?.costCents).toBe(225);
+    // Chat reports prompt/completion names, with prompt_tokens INCLUSIVE of
+    // cached: 1M prompt (400k cached) + 1M completion on gpt-5.5-mini is
+    // 0.6*0.25 + 1*2 + 0.4*0.025 = $2.16 - not input-rate on the full million.
+    expect(row?.inputTokens).toBe(600_000);
+    expect(row?.cacheRead).toBe(400_000);
+    expect(row?.outputTokens).toBe(1_000_000);
+    expect(row?.costCents).toBe(216);
   });
 
   it("3b. OpenAI Responses streaming preserves the native request shape", async () => {
@@ -513,7 +519,7 @@ describe("gateway", async () => {
       input: "hello",
     });
     expect(response.status).toBe(200);
-    await response.json();
+    expect(await response.text()).toContain("response.completed");
     await waitForRequestCount(1);
     expect(stubState.lastOpenAiRequest).toMatchObject({
       model: "gpt-5.6-sol",
@@ -523,6 +529,17 @@ describe("gateway", async () => {
     expect(
       (stubState.lastOpenAiRequest as { stream_options?: unknown }).stream_options,
     ).toBeUndefined();
+    // The Codex path: usage lives inside the response.completed envelope.
+    // 1M input (250k cached) + 200k output on gpt-5.6-sol:
+    // 0.75*5 + 0.2*30 + 0.25*0.5 = $9.875. Metering this at zero is #232's
+    // headline - hard budgets never accumulate for Codex runs.
+    const row = (
+      await db.select().from(llmRequests).where(eq(llmRequests.virtualKeyId, setup.keyId))
+    )[0];
+    expect(row?.inputTokens).toBe(750_000);
+    expect(row?.cacheRead).toBe(250_000);
+    expect(row?.outputTokens).toBe(200_000);
+    expect(row?.costCents).toBe(987.5);
   });
 
   it("4. Hard budget exceeded returns 402 and skips upstream", async () => {
@@ -1346,7 +1363,7 @@ async function buildStub(state: StubState) {
       reply.raw.end(
         [
           'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n',
-          'data: {"choices":[],"usage":{"input_tokens":1000000,"output_tokens":1000000}}\n\n',
+          'data: {"choices":[],"usage":{"prompt_tokens":1000000,"completion_tokens":1000000,"prompt_tokens_details":{"cached_tokens":400000}}}\n\n',
           "data: [DONE]\n\n",
         ].join(""),
       );
@@ -1355,14 +1372,26 @@ async function buildStub(state: StubState) {
     return {
       id: "chatcmpl_stub",
       choices: [{ message: { role: "assistant", content: "ok" } }],
-      usage: { input_tokens: 1_000_000, output_tokens: 1_000_000 },
+      usage: { prompt_tokens: 1_000_000, completion_tokens: 1_000_000 },
     };
   });
 
-  app.post("/openai/v1/responses", async (request) => {
+  app.post("/openai/v1/responses", async (request, reply) => {
     state.openaiCalls += 1;
     expect(request.headers.authorization).toBe("Bearer real-openai");
     state.lastOpenAiRequest = request.body;
+    if ((request.body as { stream?: boolean }).stream) {
+      // The wire shape Codex consumes: usage arrives once, nested inside the
+      // response.completed envelope - never at the frame's top level.
+      reply.raw.writeHead(200, { "content-type": "text/event-stream" });
+      reply.raw.end(
+        [
+          'data: {"type":"response.created","response":{"id":"resp_stub"}}\n\n',
+          'data: {"type":"response.completed","response":{"id":"resp_stub","usage":{"input_tokens":1000000,"output_tokens":200000,"input_tokens_details":{"cached_tokens":250000}}}}\n\n',
+        ].join(""),
+      );
+      return reply;
+    }
     return {
       id: "resp_stub",
       output: [],
