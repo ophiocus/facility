@@ -55,6 +55,13 @@ export type DeliveryRecordFinding = {
 
 export type DeliveryRecordReport = {
   checkedTurns: number;
+  /**
+   * Settled turns whose capture never began: the dispatcher failed or was
+   * canceled before `TurnGitEvidenceService.start()` ran (budget rejection,
+   * credential issue, environment preparation, cancel while queued), so
+   * neither telling exists. Counted so coverage stays honest; not a finding.
+   */
+  unstartedCaptures: number;
   /** Completed captures whose final SHA GitHub has independently reported. */
   witnessedTurns: number;
   findings: DeliveryRecordFinding[];
@@ -64,19 +71,25 @@ export type DeliveryRecordReport = {
 
 const ACTIVE_TURN_STATES = ["queued", "running"];
 
+export type WitnessObservation = { sha: string; branch: string };
+
 /**
- * Which of the given SHAs GitHub has reported for this project — as branch
- * heads, pull heads, or CI heads. Bounded by the page that asks.
+ * What GitHub has reported about the given SHAs, as (sha, branch) pairs:
+ * branch heads by name, pull heads and CI heads by the pull's head ref.
+ * Distinct server-side, so the rows returned are bounded by the distinct
+ * pairs the mirror holds for the page's SHAs, never by how many times
+ * GitHub reported them (a busy pull produces hundreds of CI observations
+ * for one head).
  */
-async function witnessedShas(
+export async function witnessObservations(
   db: FacilityDb,
   scope: { orgId: string; projectId: string },
   shas: string[],
-): Promise<Set<string>> {
-  if (shas.length === 0) return new Set();
+): Promise<WitnessObservation[]> {
+  if (shas.length === 0) return [];
   const [branchRows, pullRows, ciRows] = await Promise.all([
     db
-      .select({ sha: githubBranches.headSha })
+      .selectDistinct({ sha: githubBranches.headSha, branch: githubBranches.name })
       .from(githubBranches)
       .where(
         and(
@@ -86,7 +99,11 @@ async function witnessedShas(
         ),
       ),
     db
-      .select({ sha: githubPullRequests.headSha, ciSha: githubPullRequests.ciHeadSha })
+      .selectDistinct({
+        sha: githubPullRequests.headSha,
+        ciSha: githubPullRequests.ciHeadSha,
+        branch: githubPullRequests.headRef,
+      })
       .from(githubPullRequests)
       .where(
         and(
@@ -99,8 +116,15 @@ async function witnessedShas(
         ),
       ),
     db
-      .select({ sha: githubCiEvents.headSha })
+      .selectDistinct({ sha: githubCiEvents.headSha, branch: githubPullRequests.headRef })
       .from(githubCiEvents)
+      .innerJoin(
+        githubPullRequests,
+        and(
+          eq(githubPullRequests.repositoryId, githubCiEvents.repositoryId),
+          eq(githubPullRequests.number, githubCiEvents.pullNumber),
+        ),
+      )
       .where(
         and(
           eq(githubCiEvents.orgId, scope.orgId),
@@ -110,14 +134,45 @@ async function witnessedShas(
       ),
   ]);
   const asked = new Set(shas);
-  const witnessed = new Set<string>();
-  for (const row of branchRows) witnessed.add(row.sha);
+  const observations: WitnessObservation[] = [...branchRows, ...ciRows];
   for (const row of pullRows) {
-    if (asked.has(row.sha)) witnessed.add(row.sha);
-    if (row.ciSha && asked.has(row.ciSha)) witnessed.add(row.ciSha);
+    if (asked.has(row.sha)) observations.push({ sha: row.sha, branch: row.branch });
+    if (row.ciSha && asked.has(row.ciSha))
+      observations.push({ sha: row.ciSha, branch: row.branch });
   }
-  for (const row of ciRows) witnessed.add(row.sha);
-  return witnessed;
+  return observations;
+}
+
+type Telling = {
+  finalSha: string | null;
+  commits: unknown;
+};
+
+/**
+ * Whether GitHub corroborates one telling of a turn's final state. Presence
+ * of the SHA somewhere in GitHub's record is not enough — an old head is
+ * still a real SHA — so three things must hold: GitHub reported the SHA on
+ * the turn's own branch; the SHA is not the turn's starting point (unless
+ * the telling records no commits, an honest no-op); and the telling's own
+ * commit list ends at that SHA (the writer logs `--reverse` from the initial
+ * SHA to HEAD). A telling that fails any of these is uncorroborated, which
+ * is not the same as wrong.
+ */
+function corroborated(
+  telling: Telling,
+  turn: { branch: string | null; initialSha: string },
+  witnessed: Map<string, Set<string>>,
+): boolean {
+  const sha = telling.finalSha;
+  if (!sha) return false;
+  const branches = witnessed.get(sha);
+  if (!branches || !turn.branch || !branches.has(turn.branch)) return false;
+  const commits = Array.isArray(telling.commits)
+    ? (telling.commits as Record<string, unknown>[])
+    : [];
+  if (commits.length === 0) return sha === turn.initialSha;
+  if (sha === turn.initialSha) return false;
+  return commits.at(-1)?.sha === sha;
 }
 
 export async function verifyDeliveryRecord(
@@ -140,7 +195,7 @@ export async function verifyDeliveryRecord(
     .limit(limit);
 
   if (settled.length === 0) {
-    return { checkedTurns: 0, witnessedTurns: 0, findings: [], cursor: null };
+    return { checkedTurns: 0, unstartedCaptures: 0, witnessedTurns: 0, findings: [], cursor: null };
   }
 
   const turnIds = settled.map((turn) => turn.id);
@@ -175,13 +230,30 @@ export async function verifyDeliveryRecord(
     const finalSha = (event.data as Record<string, unknown> | null)?.finalSha;
     if (typeof finalSha === "string") candidateShas.add(finalSha);
   }
-  const witnessed = await witnessedShas(db, input, [...candidateShas]);
+  const witnessed = new Map<string, Set<string>>();
+  for (const seen of await witnessObservations(db, input, [...candidateShas])) {
+    const branches = witnessed.get(seen.sha) ?? new Set<string>();
+    branches.add(seen.branch);
+    witnessed.set(seen.sha, branches);
+  }
 
   const findings: DeliveryRecordFinding[] = [];
   let witnessedTurns = 0;
+  let unstartedCaptures = 0;
   for (const turn of settled) {
     const row = rowByTurn.get(turn.id);
+    const context = contextEventByTurn.get(turn.id);
     if (!row) {
+      // TurnGitEvidenceService.start() writes the row and then the context
+      // event, and the dispatcher only reaches it after the budget check,
+      // credential issue and environment preparation. A turn that failed or
+      // was canceled with neither telling never began capture; that is the
+      // lifecycle, not a hole. A succeeded turn cannot have skipped start(),
+      // and a context event without its row means the row was destroyed.
+      if (!context && turn.state !== "succeeded") {
+        unstartedCaptures += 1;
+        continue;
+      }
       findings.push({
         check: "completeness",
         turnId: turn.id,
@@ -194,7 +266,6 @@ export async function verifyDeliveryRecord(
 
     // The start of the turn is told twice: the row's initial fields and the
     // turn:{id}:context event written before the engine ran.
-    const context = contextEventByTurn.get(turn.id);
     if (!context) {
       findings.push({
         check: "coherence",
@@ -258,7 +329,15 @@ export async function verifyDeliveryRecord(
       continue;
     }
 
-    const rowWitnessed = row.finalSha != null && witnessed.has(row.finalSha);
+    // The branch the turn worked on, told by the context event when it
+    // exists (a telling the row did not write), else by the row itself.
+    const contextBranch = (context?.data as Record<string, unknown> | null)?.branch;
+    const turnScope = {
+      branch:
+        typeof contextBranch === "string" ? contextBranch : (row.finalBranch ?? row.initialBranch),
+      initialSha: row.initialSha,
+    };
+    const rowWitnessed = corroborated(row, turnScope, witnessed);
     if (rowWitnessed) witnessedTurns += 1;
 
     if (!event) {
@@ -302,8 +381,14 @@ export async function verifyDeliveryRecord(
     if (Boolean(data.dirty) !== Boolean(row.dirty)) divergences.push("dirty");
     if (divergences.length === 0) continue;
 
-    // When the two tellings disagree about the final SHA, ask the witness.
-    const eventWitnessed = typeof data.finalSha === "string" && witnessed.has(data.finalSha);
+    // When the two tellings disagree about the final SHA, ask the witness —
+    // and only convict when it corroborates exactly one side on this turn's
+    // own terms. Presence of a SHA alone is not a verdict.
+    const eventWitnessed = corroborated(
+      { finalSha: typeof data.finalSha === "string" ? data.finalSha : null, commits: data.commits },
+      turnScope,
+      witnessed,
+    );
     if (divergences.includes("finalSha") && rowWitnessed !== eventWitnessed) {
       const seen = rowWitnessed ? "evidence row" : "evidence event";
       const drifted = rowWitnessed ? "evidence event" : "evidence row";
@@ -327,6 +412,7 @@ export async function verifyDeliveryRecord(
 
   return {
     checkedTurns: settled.length,
+    unstartedCaptures,
     witnessedTurns,
     findings,
     cursor: settled.length === limit ? (settled.at(-1)?.id ?? null) : null,

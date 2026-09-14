@@ -4,6 +4,7 @@ import {
   createDb,
   githubBranches,
   githubInstallations,
+  githubPullRequests,
   migrate,
   orgs,
   projectRepositories,
@@ -347,31 +348,50 @@ describe("delivery-record checks", async () => {
         .insert(turns)
         .values([turnRow(driftedRowTurnId, "succeeded"), turnRow(unwitnessedTurnId, "succeeded")]);
       await db.insert(turnGitEvidence).values([
-        // row says e, event will say f; GitHub will report f
+        // row says e, event will say f (and its commits end at f); GitHub will report f
         evidenceRow(driftedRowTurnId, { finalSha: sha("e") }),
         // row says c, event will say d; GitHub reports neither
         evidenceRow(unwitnessedTurnId, { finalSha: sha("c") }),
       ]);
-      await db
-        .insert(storyEvidenceEvents)
-        .values([
-          gitEvent(driftedRowTurnId, { finalSha: sha("f") }),
-          gitEvent(unwitnessedTurnId, { finalSha: sha("d") }),
-          contextEvent(driftedRowTurnId),
-          contextEvent(unwitnessedTurnId),
-        ]);
-      // The witness: head SHAs GitHub reported, as the mirror stores them.
-      await db.insert(githubBranches).values([
-        {
-          id: newId("ghb"),
-          orgId,
-          projectId,
-          repositoryId,
-          name: "facility/story",
-          headSha: sha("a"),
-        },
-        { id: newId("ghb"), orgId, projectId, repositoryId, name: "feature/f", headSha: sha("f") },
+      await db.insert(storyEvidenceEvents).values([
+        gitEvent(driftedRowTurnId, {
+          finalSha: sha("f"),
+          commits: [
+            {
+              sha: sha("f"),
+              author: "Builder",
+              authoredAt: "2026-09-06T10:00:00+00:00",
+              subject: "feat: work",
+            },
+          ],
+        }),
+        gitEvent(unwitnessedTurnId, { finalSha: sha("d") }),
+        contextEvent(driftedRowTurnId),
+        contextEvent(unwitnessedTurnId),
       ]);
+      // The witness: head SHAs GitHub reported on the story's branch, as the
+      // mirror stores them — the branch head, and a pull opened from it.
+      await db.insert(githubBranches).values({
+        id: newId("ghb"),
+        orgId,
+        projectId,
+        repositoryId,
+        name: "facility/story",
+        headSha: sha("a"),
+      });
+      await db.insert(githubPullRequests).values({
+        id: newId("ghp"),
+        orgId,
+        projectId,
+        repositoryId,
+        number: 41,
+        title: "Deliver with a verifiable record",
+        state: "open",
+        headRef: "facility/story",
+        headSha: sha("f"),
+        baseRef: "main",
+        htmlUrl: `https://github.com/acme/record-${suffix}/pull/41`,
+      });
     });
 
     it("counts the settled turns whose final SHA GitHub has reported", async () => {
