@@ -257,6 +257,35 @@ export async function verifyAuditRecord(
   return { ...report, findings };
 }
 
+export type MatchingAction = { action: string; targetId: string };
+
+/**
+ * Which (action, target) pairs the log holds for the given targets. Distinct
+ * server-side and capped at `actions × targets`, the most distinct pairs
+ * there can be, so the rows returned are bounded by the page that asks and
+ * never by how many times the log repeats a pair (a replayed or duplicated
+ * `key.issued` is one pair, not a thousand rows).
+ */
+export async function matchingActions(
+  db: FacilityDb,
+  orgId: string,
+  actions: string[],
+  targetIds: string[],
+): Promise<MatchingAction[]> {
+  if (targetIds.length === 0 || actions.length === 0) return [];
+  return db
+    .selectDistinct({ action: auditEvents.action, targetId })
+    .from(auditEvents)
+    .where(
+      and(
+        eq(auditEvents.orgId, orgId),
+        inArray(auditEvents.action, actions),
+        inArray(targetId, targetIds),
+      ),
+    )
+    .limit(actions.length * targetIds.length);
+}
+
 /** Which of the given actions the log holds for each target id, in one query per page. */
 async function actionsFor(
   db: FacilityDb,
@@ -265,18 +294,7 @@ async function actionsFor(
   targetIds: string[],
 ): Promise<Map<string, Set<string>>> {
   const map = new Map<string, Set<string>>();
-  if (targetIds.length === 0) return map;
-  const rows = await db
-    .select({ action: auditEvents.action, targetId })
-    .from(auditEvents)
-    .where(
-      and(
-        eq(auditEvents.orgId, orgId),
-        inArray(auditEvents.action, actions),
-        inArray(targetId, targetIds),
-      ),
-    );
-  for (const row of rows) {
+  for (const row of await matchingActions(db, orgId, actions, targetIds)) {
     const set = map.get(row.targetId) ?? new Set<string>();
     set.add(row.action);
     map.set(row.targetId, set);

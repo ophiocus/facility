@@ -8,6 +8,7 @@ import {
   orgs,
   projectBudgets,
   projects,
+  seed,
 } from "@facility/db";
 import { eq } from "drizzle-orm";
 import postgres from "postgres";
@@ -90,6 +91,9 @@ describe("audit-record checks", async () => {
 
   beforeAll(async () => {
     await migrate(databaseUrl);
+    // The bundled roles the keys below reference are written by the seed
+    // (packages/db/src/seed.ts), not by a migration; a fresh database has none.
+    await seed(databaseUrl);
     await db.insert(orgs).values([
       { id: orgId, name: "Audit", slug: `audit-${suffix}`, settings: {} },
       { id: otherOrgId, name: "OtherAudit", slug: `other-audit-${suffix}`, settings: {} },
